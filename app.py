@@ -10,10 +10,10 @@ from typing import Optional, List, Dict, Any
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, EmailStr, validator
 import uvicorn
 
@@ -23,6 +23,7 @@ from auth import AuthService, get_current_user
 from ai_service import AIService
 from email_service import EmailService, EmailDeliveryResult
 from token_service import TokenService
+from oauth_service import OAuthService
 from models import (
     UserCreate, UserLogin, UserResponse, UserUpdate,
     SupplementCreate, SupplementUpdate, SupplementResponse,
@@ -51,12 +52,14 @@ async def lifespan(app: FastAPI):
     ai_service = AIService()
     email_service = EmailService()
     token_service = TokenService(db)
+    oauth_service = OAuthService(db)
     
     # Store in app state
     app.state.db = db
     app.state.ai_service = ai_service
     app.state.email_service = email_service
     app.state.token_service = token_service
+    app.state.oauth_service = oauth_service
     
     # Log email service status
     email_config = email_service.get_configuration_status()
@@ -70,6 +73,14 @@ async def lifespan(app: FastAPI):
             logger.warning(f"SMTP connection test failed: {test_result.message}")
     else:
         logger.warning(f"Email service not configured. Missing: {', '.join(email_config['missing_config'])}")
+    
+    # Log OAuth service status
+    oauth_google_configured = oauth_service.is_configured("google")
+    
+    if oauth_google_configured:
+        logger.info("Google OAuth configured successfully")
+    else:
+        logger.warning("Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET")
     
     logger.info("SafeDoser Backend API started successfully!")
     
@@ -109,6 +120,7 @@ app.add_middleware(
 async def health_check():
     """Health check endpoint"""
     email_service = app.state.email_service
+    oauth_service = app.state.oauth_service
     email_config = email_service.get_configuration_status()
     
     return HealthResponse(
@@ -136,6 +148,75 @@ async def email_status():
         }
     
     return config
+
+# OAuth endpoints
+@app.get("/auth/google")
+async def google_oauth(request: Request):
+    """Initiate Google OAuth flow"""
+    try:
+        oauth_service = app.state.oauth_service
+        
+        if not oauth_service.is_configured("google"):
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail="Google OAuth not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables."
+            )
+        
+        # Generate OAuth URL
+        auth_url, state = oauth_service.get_google_auth_url()
+        
+        # Redirect to Google OAuth
+        return RedirectResponse(url=auth_url, status_code=302)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Google OAuth error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="OAuth initialization failed"
+        )
+
+@app.get("/auth/google/callback")
+async def google_oauth_callback(code: str, state: str, error: Optional[str] = None):
+    """Handle Google OAuth callback"""
+    try:
+        oauth_service = app.state.oauth_service
+        
+        if error:
+            logger.warning(f"Google OAuth error: {error}")
+            redirect_url = oauth_service.get_frontend_redirect_url(
+                success=False, 
+                error="oauth_error", 
+                message="Google authentication was cancelled or failed"
+            )
+            return RedirectResponse(url=redirect_url, status_code=302)
+        
+        if not code or not state:
+            redirect_url = oauth_service.get_frontend_redirect_url(
+                success=False, 
+                error="missing_parameters", 
+                message="Missing required OAuth parameters"
+            )
+            return RedirectResponse(url=redirect_url, status_code=302)
+        
+        # Handle OAuth callback
+        result = await oauth_service.handle_google_callback(code, state)
+        
+        # Create success redirect with tokens
+        # In a real app, you might want to set secure HTTP-only cookies instead
+        redirect_url = f"{oauth_service.frontend_url}/?access_token={result['access_token']}&refresh_token={result['refresh_token']}"
+        return RedirectResponse(url=redirect_url, status_code=302)
+        
+    except Exception as e:
+        logger.error(f"Google OAuth callback error: {str(e)}")
+        oauth_service = app.state.oauth_service
+        redirect_url = oauth_service.get_frontend_redirect_url(
+            success=False, 
+            error="oauth_callback_failed", 
+            message="Authentication failed. Please try again."
+        )
+        return RedirectResponse(url=redirect_url, status_code=302)
 
 # Email verification models
 class EmailVerificationRequest(BaseModel):

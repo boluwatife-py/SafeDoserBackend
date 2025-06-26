@@ -132,6 +132,39 @@ class AuthService:
                 detail=str(e)
             )
 
+    async def create_user_from_dict(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create user from dictionary data (for OAuth)"""
+        try:
+            # Hash password
+            hashed_password = self.hash_password(user_data["password"])
+
+            # For OAuth users, we'll create them directly in the database
+            # since they're already authenticated by the OAuth provider
+            import uuid
+            user_id = str(uuid.uuid4())
+
+            db_user_data = {
+                "id": user_id,
+                "email": user_data["email"],
+                "password_hash": hashed_password,
+                "name": user_data["name"],
+                "age": user_data["age"],
+                "avatar_url": user_data.get("avatar"),
+                "email_verified": True,  # OAuth users are pre-verified
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            }
+
+            user = await self.db.create_user(db_user_data)
+            user.pop("password_hash", None)
+            return user
+
+        except Exception as e:
+            logger.error(f"Create OAuth user error: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(e)
+            )
     
     async def authenticate_user(self, email: str, password: str) -> Optional[Dict[str, Any]]:
         """Authenticate a user with email and password"""
