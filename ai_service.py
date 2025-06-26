@@ -64,10 +64,10 @@ class AIService:
                     thinking_config=types.ThinkingConfig(thinking_budget=0)
                 ),
             )
-            return response.text or "I'm sorry, I couldn’t generate a helpful response at this time."
+            return response.text or "I'm sorry, I couldn't generate a helpful response at this time."
         except Exception as e:
             logger.error(f"Gemini AI error: {e}")
-            return "I'm sorry, I couldn’t generate a helpful response at this time."
+            return "I'm sorry, I couldn't generate a helpful response at this time."
 
     def _build_medical_prompt(
         self,
@@ -75,91 +75,57 @@ class AIService:
         context: Dict[str, Any],
         chat_history: List[Dict[str, Any]]
     ) -> str:
-        """Build a detailed medical prompt with context and history"""
-        medical_prompt = """
-You are SafeDoser Assistant — a friendly, helpful AI assistant specializing in medications, supplements, and health guidance. 
-You have access to comprehensive medical databases and drug interaction information.
-
-💡 IMPORTANT:
-• Always put user safety first — recommend seeing a doctor if anything serious comes up.
-• Give evidence-based info from trustworthy medical sources.
-• Be kind, human, and approachable — speak naturally like you’re chatting with a caring healthcare expert.
-• Never diagnose — just provide helpful educational information.
-• Always remind them to check with their healthcare provider for personalized advice.
-• Consider their age, current supplements, and other personal context they give you.
-• Assume the user's name and age are already provided — use them to personalize your responses.
-
-🧠 KNOWLEDGE AREAS:
-• Drug interactions and safety
-• Benefits, side effects, and proper usage of supplements
-• Best timing to take medications and supplements
-• Age-specific considerations (e.g. senior or pediatric advice)
-• Common health topics and treatments
-• How to help users stay on track with their regimen
-
-💬 RESPONSE STYLE:
-• Speak like a friendly, knowledgeable person.
-• Use a warm, natural tone — not robotic.
-• Be clear, concise, and supportive.
-• Personalize by using the user's name and acknowledging their age.
-• Sprinkle in a few appropriate emojis (💊, ⚕️, 🩺) to make responses feel kind and human.
-• Encourage safe habits and double-checking with a healthcare provider as needed.
-"""
-
-        user_name = context.get("user_name", "there")
-        user_age = context.get("user_age", "unknown")
+        """Build a concise medical prompt with context and history"""
+        
+        # Get user context
+        user_name = context.get("user_name", "")
+        user_age = context.get("user_age", "")
         supplements = context.get("supplements", [])
-        current_time = context.get("current_time", datetime.utcnow().isoformat())
-
-        context_prompt = f"""
-USER CONTEXT:
-Name: {user_name}
-Age: {user_age} years old
-Current Time: {current_time}
-
-Current Supplements:
-"""
+        
+        # Build supplement context
+        supplement_context = ""
         if supplements:
+            supplement_list = []
             for supp in supplements:
-                times_of_day = supp.get("times_of_day", {})
-                if isinstance(times_of_day, str):
-                    try:
-                        times_of_day = json.loads(times_of_day)
-                    except:
-                        times_of_day = {}
-                
-                interactions = supp.get("interactions", [])
-                if isinstance(interactions, str):
-                    try:
-                        interactions = json.loads(interactions)
-                    except:
-                        interactions = []
-                
-                context_prompt += f"- {supp.get('name', 'Unknown')} ({supp.get('dosage_form', 'unknown form')}) - {supp.get('frequency', 'unknown frequency')}\n"
-                context_prompt += f"  Brand: {supp.get('brand', 'Unknown')}\n"
-                context_prompt += f"  Dose: {supp.get('dose_quantity', 'unknown')} {supp.get('dose_unit', 'units')}\n"
-                
-                if interactions:
-                    context_prompt += f"  Interactions: {', '.join(interactions)}\n"
-        else:
-            context_prompt += "No supplements currently tracked\n"
+                name = supp.get('name', 'Unknown')
+                form = supp.get('dosage_form', '')
+                freq = supp.get('frequency', '')
+                supplement_list.append(f"{name} ({form}, {freq})")
+            supplement_context = f"Current supplements: {', '.join(supplement_list[:3])}" # Limit to 3 for brevity
+            if len(supplements) > 3:
+                supplement_context += f" and {len(supplements) - 3} more"
+        
+        # Build conversation history (last 3 exchanges only)
+        history_context = ""
+        recent_history = chat_history[-6:] if chat_history else []
+        if recent_history:
+            history_parts = []
+            for msg in recent_history:
+                sender = "User" if msg.get('sender') == 'user' else "Assistant"
+                text = msg.get('message', '')[:100] # Truncate long messages
+                history_parts.append(f"{sender}: {text}")
+            history_context = f"Recent conversation: {' | '.join(history_parts)}"
 
-        history_prompt = "\nCONVERSATION HISTORY:\n"
-        for msg in chat_history[-6:]:
-            history_prompt += f"{msg.get('sender', '').upper()}: {msg.get('message', '')}\n"
+        # Concise system prompt
+        system_prompt = f"""You are SafeDoser Assistant, a helpful medical AI for supplement and medication guidance.
 
-        full_prompt = f"""
-{medical_prompt}
+GUIDELINES:
+- Be concise and helpful (2-3 sentences max for simple questions)
+- Only mention user's name/age when directly relevant to the medical advice
+- Prioritize safety - recommend healthcare providers for serious concerns
+- Provide evidence-based information
+- Never diagnose conditions
 
-{context_prompt}
+CONTEXT:
+User: {user_name}, {user_age} years old
+{supplement_context}
+{history_context}
 
-{history_prompt}
+USER QUESTION: {user_message}
 
-USER MESSAGE: {user_message}
+Provide a helpful, concise response. Use the user's name sparingly and only when it adds value to the response."""
 
-Please provide a helpful, medically accurate response considering the user's context and supplement regimen. Always prioritize safety and recommend consulting healthcare providers when appropriate.
-"""
-        return full_prompt
+        return system_prompt
 
     def _generate_fallback_response(
         self,
@@ -167,14 +133,14 @@ Please provide a helpful, medically accurate response considering the user's con
         context: Dict[str, Any]
     ) -> str:
         """Generate an intelligent fallback response when AI is unavailable"""
-        user_name = context.get("user_name", "there")
-        user_age = context.get("user_age", 45)
+        user_name = context.get("user_name", "")
         supplements = context.get("supplements", [])
         lower_message = user_message.lower()
 
         # Greeting responses
         if any(word in lower_message for word in ['hello', 'hi', 'hey', 'good morning', 'good afternoon']):
-            return f"Hello {user_name}! 👋 I'm here to help you with any questions about your medications and supplements. I see you're currently managing {len(supplements)} supplements. How can I assist you today? 💊"
+            greeting = "Hello! 👋" if not user_name else f"Hello {user_name}! 👋"
+            return f"{greeting} I'm here to help with questions about your medications and supplements. What would you like to know? 💊"
 
         # Supplement-specific questions
         mentioned_supplement = None
@@ -184,142 +150,76 @@ Please provide a helpful, medically accurate response considering the user's con
                 break
 
         if mentioned_supplement:
-            return self._generate_supplement_specific_response(mentioned_supplement, user_message, user_name, user_age)
+            name = mentioned_supplement.get('name', 'this supplement')
+            return f"I can help with {name}! What specifically would you like to know - timing, interactions, benefits, or side effects? For personalized dosing advice, always consult your healthcare provider. 💊"
 
         # Drug interaction questions
         if any(word in lower_message for word in ['interaction', 'interact', 'together', 'combine']):
-            return self._generate_interaction_response(supplements, user_name)
+            if not supplements:
+                return "You don't have any supplements tracked yet. When you add them, I can help check for potential interactions! 🔍"
+            return "I can help with interaction information! Some supplements compete for absorption (like calcium and iron), while others work better together. For prescription drug interactions, always check with your pharmacist. What specific interaction concerns do you have?"
 
         # Side effects questions
         if any(word in lower_message for word in ['side effect', 'adverse', 'reaction', 'problem']):
-            return f"Side effects are an important consideration, {user_name}. At {user_age} years old, it's especially important to monitor for any unusual symptoms. Common supplement side effects can include digestive upset, headaches, or allergic reactions.\n\nFor your current supplements, I recommend:\n• Monitor for any unusual symptoms\n• Take supplements as directed\n• Report any concerns to your healthcare provider\n\nIf you're experiencing any concerning symptoms, please contact your healthcare provider immediately. Would you like information about any specific supplement? ⚕️"
+            return "Side effects are important to monitor. Common supplement side effects include digestive upset or headaches. If you're experiencing concerning symptoms, contact your healthcare provider immediately. What specific concerns do you have? ⚕️"
 
         # Dosage questions
         if any(word in lower_message for word in ['dose', 'dosage', 'how much', 'amount']):
-            return f"Dosage questions are crucial for safety, {user_name}! At {user_age}, proper dosing is especially important. I can see your current supplement schedule, but I always recommend confirming dosages with your healthcare provider or pharmacist.\n\nNever adjust doses without medical supervision. If you're unsure about any dosage, please consult your doctor. Would you like me to review your current supplement timing? 📋"
+            return "Dosage questions are crucial for safety! I recommend confirming all dosages with your healthcare provider or pharmacist. Never adjust doses without medical supervision. What specific dosage question do you have? 📋"
 
         # Timing questions
         if any(word in lower_message for word in ['when', 'time', 'timing', 'schedule']):
-            return self._generate_timing_response(supplements, user_name)
-
-        # Age-related questions
-        if any(word in lower_message for word in ['age', 'older', 'senior', 'elderly']):
-            return f"At {user_age} years old, there are some important considerations for supplement use:\n\n🔹 **Absorption**: Some supplements may be absorbed differently with age\n🔹 **Kidney Function**: Important to monitor with certain supplements\n🔹 **Drug Interactions**: More likely if taking multiple medications\n🔹 **Bone Health**: Calcium, Vitamin D, and Magnesium become increasingly important\n\nYour current supplement regimen looks well-balanced. Always discuss any changes with your healthcare provider, especially considering age-related factors. Is there a specific concern you'd like to discuss? 👨‍⚕️"
+            if not supplements:
+                return "You don't have supplements scheduled yet. When you add them, I can help optimize timing for best absorption! ⏰"
+            return "Great question about timing! Morning is best for energizing supplements (B vitamins), evening for relaxing ones (magnesium). Fat-soluble vitamins work better with meals. What timing question do you have? ⏰"
 
         # General health questions
         if any(word in lower_message for word in ['health', 'benefit', 'good for', 'help with']):
-            return f"Great question about health benefits, {user_name}! Your current supplement regimen shows good attention to overall wellness. Here's what I can tell you about general benefits:\n\n{self._generate_health_benefits_info(supplements)}\n\nRemember, supplements work best as part of a healthy lifestyle including proper diet, exercise, and regular medical check-ups. At {user_age}, maintaining these habits is especially beneficial! 🌟\n\nIs there a specific health goal you're working towards?"
+            return "Supplements work best as part of a healthy lifestyle with proper diet and exercise. Each supplement has specific benefits - what particular health goal or supplement are you curious about? 🌟"
 
-        # Default response with context
-        return f"I'd be happy to help you with that, {user_name}! I have access to comprehensive medical information and can see you're currently managing {len(supplements)} supplements.\n\nI can help you with:\n💊 Supplement information and interactions\n⏰ Timing and dosage guidance\n🩺 General health questions\n⚠️ Side effect information\n🔄 Medication adherence tips\n\nCould you be more specific about what you'd like to know? I'm here to provide evidence-based information while always recommending you consult with your healthcare provider for personalized advice."
-
-    def _generate_supplement_specific_response(
-        self,
-        supplement: Dict[str, Any],
-        user_message: str,
-        user_name: str,
-        user_age: int
-    ) -> str:
-        """Generate response specific to a mentioned supplement"""
-        supplement_name = supplement.get('name', 'Unknown supplement')
-        dosage_form = supplement.get('dosage_form', 'unknown form')
-        frequency = supplement.get('frequency', 'unknown frequency')
-        
-        return f"I can help you with information about {supplement_name}, {user_name}!\n\n**Your Current Details:**\n• Form: {dosage_form}\n• Frequency: {frequency}\n• Dose: {supplement.get('dose_quantity', 'unknown')} {supplement.get('dose_unit', 'units')}\n\n{self._get_supplement_info(supplement_name, user_age)}\n\nIs there something specific about {supplement_name} you'd like to know more about? I can discuss timing, interactions, benefits, or any concerns you might have. 💊"
-
-    def _generate_interaction_response(
-        self,
-        supplements: List[Dict[str, Any]],
-        user_name: str
-    ) -> str:
-        """Generate response about supplement interactions"""
-        if not supplements:
-            return f"{user_name}, you don't currently have any supplements tracked, so there are no interactions to check. When you add supplements, I can help you identify potential interactions! 🔍"
-        
-        supplement_names = [s.get('name', 'Unknown') for s in supplements]
-        
-        return f"Great question about interactions, {user_name}! I can see you're taking: {', '.join(supplement_names)}.\n\n**General Interaction Guidelines:**\n🔹 **Timing**: Some supplements compete for absorption (like calcium and iron)\n🔹 **Food**: Some work better with food, others on empty stomach\n🔹 **Medications**: Always check with your pharmacist about prescription drug interactions\n\n**Your Current Supplements:**\n{self._generate_interaction_info(supplements)}\n\nFor specific interaction concerns, especially with prescription medications, please consult your pharmacist or healthcare provider. They can access comprehensive interaction databases! ⚕️\n\nDo you have a specific interaction concern?"
-
-    def _generate_timing_response(
-        self,
-        supplements: List[Dict[str, Any]],
-        user_name: str
-    ) -> str:
-        """Generate response about supplement timing"""
-        if not supplements:
-            return f"{user_name}, you don't have any supplements scheduled yet. When you add them, I can help optimize your timing for best absorption and effectiveness! ⏰"
-        
-        schedule_info = []
-        for supp in supplements:
-            name = supp.get('name', 'Unknown')
-            frequency = supp.get('frequency', 'unknown frequency')
-            schedule_info.append(f"• {name} - {frequency}")
-        
-        return f"Here's your current supplement schedule, {user_name}:\n\n{chr(10).join(schedule_info)}\n\n**Timing Tips:**\n🌅 **Morning**: Best for energizing supplements (B vitamins, iron)\n🌆 **Evening**: Good for relaxing supplements (magnesium, melatonin)\n🍽️ **With Food**: Fat-soluble vitamins (A, D, E, K) absorb better with meals\n🥛 **Empty Stomach**: Some minerals absorb better without food\n\nYour timing looks well-distributed! Any specific timing concerns or questions about optimal absorption? ⏰"
-
-    def _generate_health_benefits_info(self, supplements: List[Dict]) -> str:
-        """Generate health benefits information for supplements"""
-        if not supplements:
-            return "When you add supplements, I can provide specific benefit information for each one."
-        
-        benefits = []
-        for supp in supplements:
-            name = supp.get('name', 'Unknown')
-            benefit = self._get_basic_benefit_info(name)
-            benefits.append(f"• **{name}**: {benefit}")
-        
-        return '\n'.join(benefits)
-
-    def _generate_interaction_info(self, supplements: List[Dict]) -> str:
-        """Generate interaction information for supplements"""
-        interactions = []
-        for supp in supplements:
-            name = supp.get('name', 'Unknown')
-            interaction = self._get_basic_interaction_info(name)
-            interactions.append(f"• {name} - {interaction}")
-        
-        return '\n'.join(interactions)
+        # Default response
+        return "I can help with supplement information, interactions, timing, dosage guidance, and general health questions. What would you like to know? For personalized medical advice, always consult your healthcare provider."
 
     def _get_supplement_info(self, name: str, age: int) -> str:
         """Get basic information about a supplement"""
         lower_name = name.lower()
         
         if 'vitamin d' in lower_name:
-            return f"**Vitamin D3** is excellent for bone health, especially important at {age}! Best absorbed with fat-containing meals. Supports immune function and calcium absorption. Recommended to check blood levels annually."
+            return "Vitamin D3 supports bone health and immune function. Best absorbed with fat-containing meals. Consider checking blood levels annually."
         
         if 'omega' in lower_name or 'fish oil' in lower_name:
-            return f"**Omega-3** supports heart and brain health - very beneficial at your age! Take with meals to reduce fishy aftertaste. Look for EPA/DHA content on labels. Great for inflammation reduction."
+            return "Omega-3 supports heart and brain health. Take with meals to reduce aftertaste. Look for EPA/DHA content on labels."
         
         if 'magnesium' in lower_name:
-            return "**Magnesium** supports muscle function, sleep, and bone health. Evening timing is often preferred as it can be relaxing. Important for heart rhythm and blood pressure regulation."
+            return "Magnesium supports muscle function and sleep. Evening timing is often preferred as it can be relaxing."
         
         if 'vitamin c' in lower_name:
-            return "**Vitamin C** is a powerful antioxidant supporting immune function. Water-soluble, so timing is flexible. Helps with iron absorption when taken together."
+            return "Vitamin C is a powerful antioxidant supporting immune function. Timing is flexible since it's water-soluble."
         
         if 'probiotic' in lower_name:
-            return "**Probiotics** support digestive and immune health. Best taken consistently, often with or after meals. Look for multiple strains and adequate CFU count."
+            return "Probiotics support digestive and immune health. Best taken consistently, often with meals."
         
         if 'melatonin' in lower_name:
-            return "**Melatonin** helps regulate sleep cycles. Take 30-60 minutes before desired bedtime. Start with lowest effective dose. Avoid bright lights after taking."
+            return "Melatonin helps regulate sleep cycles. Take 30-60 minutes before bedtime. Start with the lowest effective dose."
         
-        return "This supplement can be beneficial as part of a balanced health regimen. For specific information about benefits, dosing, and interactions, I recommend consulting with your healthcare provider or pharmacist."
+        return "This supplement can be beneficial as part of a balanced health regimen. Consult your healthcare provider for specific guidance."
 
     def _get_basic_interaction_info(self, name: str) -> str:
         """Get basic interaction information for a supplement"""
         lower_name = name.lower()
         
         if 'vitamin d' in lower_name:
-            return 'Take with calcium for synergy, avoid with thiazide diuretics'
+            return 'Works well with calcium, avoid with thiazide diuretics'
         if 'omega' in lower_name:
             return 'May enhance blood-thinning medications'
         if 'magnesium' in lower_name:
-            return 'Can affect absorption of antibiotics and bisphosphonates'
+            return 'Can affect absorption of antibiotics'
         if 'vitamin c' in lower_name:
-            return 'Enhances iron absorption, may affect some medications'
+            return 'Enhances iron absorption'
         if 'probiotic' in lower_name:
             return 'Take 2+ hours apart from antibiotics'
         if 'melatonin' in lower_name:
-            return 'May interact with blood thinners and diabetes medications'
+            return 'May interact with blood thinners'
         
         return 'Check with pharmacist for specific interactions'
 
@@ -328,16 +228,16 @@ Please provide a helpful, medically accurate response considering the user's con
         lower_name = name.lower()
         
         if 'vitamin d' in lower_name:
-            return 'Bone health, immune support, calcium absorption'
+            return 'Bone health, immune support'
         if 'omega' in lower_name:
-            return 'Heart health, brain function, inflammation reduction'
+            return 'Heart health, brain function'
         if 'magnesium' in lower_name:
-            return 'Muscle function, sleep quality, bone health'
+            return 'Muscle function, sleep quality'
         if 'vitamin c' in lower_name:
-            return 'Immune support, antioxidant protection, collagen synthesis'
+            return 'Immune support, antioxidant protection'
         if 'probiotic' in lower_name:
-            return 'Digestive health, immune support, gut microbiome balance'
+            return 'Digestive health, immune support'
         if 'melatonin' in lower_name:
-            return 'Sleep regulation, circadian rhythm support'
+            return 'Sleep regulation'
         
-        return 'Supports overall health and wellness as part of balanced nutrition'
+        return 'Supports overall health and wellness'
