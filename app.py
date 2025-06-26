@@ -93,10 +93,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
+        "*webcontainer-api.io",
         "http://localhost:5173",
         "https://safedoser.netlify.app",
-        "https://safedoser.vercel.app",
+        "https://zp1v56uxy8rdx5ypatb0ockcb9tr6a-oci3--5173--cb7c0bca.local-credentialless.webcontainer-api.io",
         # Add your frontend URLs here
     ],
     allow_credentials=True,
