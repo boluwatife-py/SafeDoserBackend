@@ -1,6 +1,6 @@
 """
 Email service for SafeDoser backend
-Handles email verification and password reset emails
+Handles email verification and password reset emails with real status reporting
 """
 
 import os
@@ -11,14 +11,22 @@ import hashlib
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from dotenv import load_dotenv
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+class EmailDeliveryResult:
+    """Result object for email delivery attempts"""
+    def __init__(self, success: bool, message: str, error_code: Optional[str] = None):
+        self.success = success
+        self.message = message
+        self.error_code = error_code
+        self.timestamp = datetime.utcnow()
+
 class EmailService:
-    """Email service for sending verification and reset emails"""
+    """Email service for sending verification and reset emails with real status reporting"""
     
     def __init__(self):
         self.smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
@@ -35,9 +43,27 @@ class EmailService:
         if not self.is_configured:
             logger.warning("Email service not configured. Email features will be disabled.")
     
+    def get_configuration_status(self) -> Dict[str, Any]:
+        """Get email service configuration status"""
+        return {
+            "configured": self.is_configured,
+            "smtp_server": self.smtp_server if self.is_configured else None,
+            "smtp_port": self.smtp_port if self.is_configured else None,
+            "from_email": self.from_email if self.is_configured else None,
+            "missing_config": self._get_missing_config()
+        }
+    
+    def _get_missing_config(self) -> list:
+        """Get list of missing configuration items"""
+        missing = []
+        if not self.smtp_username:
+            missing.append("SMTP_USERNAME")
+        if not self.smtp_password:
+            missing.append("SMTP_PASSWORD")
+        return missing
+    
     def generate_verification_token(self, email: str) -> str:
         """Generate a secure verification token"""
-        # Create a unique token using email + timestamp + random bytes
         timestamp = str(int(datetime.utcnow().timestamp()))
         random_bytes = secrets.token_hex(16)
         token_data = f"{email}:{timestamp}:{random_bytes}"
@@ -50,11 +76,14 @@ class EmailService:
         """Generate a secure password reset token"""
         return self.generate_verification_token(email)
     
-    async def send_verification_email(self, email: str, name: str, token: str) -> bool:
-        """Send email verification email"""
+    async def send_verification_email(self, email: str, name: str, token: str) -> EmailDeliveryResult:
+        """Send email verification email with real status reporting"""
         if not self.is_configured:
-            logger.warning("Email service not configured - skipping verification email")
-            return False
+            return EmailDeliveryResult(
+                success=False,
+                message="Email service not configured. Please check SMTP settings.",
+                error_code="EMAIL_NOT_CONFIGURED"
+            )
         
         try:
             verification_url = f"{self.frontend_url}/auth/verify-email?token={token}&email={email}"
@@ -145,13 +174,20 @@ class EmailService:
             
         except Exception as e:
             logger.error(f"Failed to send verification email to {email}: {str(e)}")
-            return False
+            return EmailDeliveryResult(
+                success=False,
+                message=f"Failed to send verification email: {str(e)}",
+                error_code="EMAIL_SEND_FAILED"
+            )
     
-    async def send_password_reset_email(self, email: str, name: str, token: str) -> bool:
-        """Send password reset email"""
+    async def send_password_reset_email(self, email: str, name: str, token: str) -> EmailDeliveryResult:
+        """Send password reset email with real status reporting"""
         if not self.is_configured:
-            logger.warning("Email service not configured - skipping reset email")
-            return False
+            return EmailDeliveryResult(
+                success=False,
+                message="Email service not configured. Please check SMTP settings.",
+                error_code="EMAIL_NOT_CONFIGURED"
+            )
         
         try:
             reset_url = f"{self.frontend_url}/auth/reset-password?token={token}&email={email}"
@@ -240,15 +276,27 @@ class EmailService:
             
         except Exception as e:
             logger.error(f"Failed to send password reset email to {email}: {str(e)}")
-            return False
+            return EmailDeliveryResult(
+                success=False,
+                message=f"Failed to send password reset email: {str(e)}",
+                error_code="EMAIL_SEND_FAILED"
+            )
     
-    async def _send_email(self, to_email: str, subject: str, text_body: str, html_body: str) -> bool:
-        """Send email using SMTP"""
+    async def _send_email(self, to_email: str, subject: str, text_body: str, html_body: str) -> EmailDeliveryResult:
+        """Send email using SMTP with detailed error reporting"""
         try:
+            # Validate email configuration
+            if not self.smtp_username or not self.smtp_password:
+                return EmailDeliveryResult(
+                    success=False,
+                    message="SMTP credentials not configured",
+                    error_code="SMTP_CREDENTIALS_MISSING"
+                )
+            
             # Create message
             msg = MIMEMultipart('alternative')
             msg['Subject'] = subject
-            msg['From'] = self.from_email or ""
+            msg['From'] = self.from_email if self.from_email is not None else "no-reply@example.com"
             msg['To'] = to_email
             
             # Add text and HTML parts
@@ -258,15 +306,140 @@ class EmailService:
             msg.attach(text_part)
             msg.attach(html_part)
             
-            # Send email
-            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
-                server.starttls()
-                server.login(self.smtp_username or "", self.smtp_password or "")
-                server.send_message(msg)
-            
-            logger.info(f"Email sent successfully to {to_email}")
-            return True
-            
+            # Send email with detailed error handling
+            try:
+                with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                    # Enable debug output for troubleshooting
+                    server.set_debuglevel(0)
+                    
+                    # Start TLS encryption
+                    try:
+                        server.starttls()
+                    except smtplib.SMTPException as e:
+                        return EmailDeliveryResult(
+                            success=False,
+                            message=f"Failed to start TLS encryption: {str(e)}",
+                            error_code="SMTP_TLS_FAILED"
+                        )
+                    
+                    # Authenticate
+                    try:
+                        server.login(self.smtp_username, self.smtp_password)
+                    except smtplib.SMTPAuthenticationError as e:
+                        return EmailDeliveryResult(
+                            success=False,
+                            message=f"SMTP authentication failed: {str(e)}. Check your username and password.",
+                            error_code="SMTP_AUTH_FAILED"
+                        )
+                    except smtplib.SMTPException as e:
+                        return EmailDeliveryResult(
+                            success=False,
+                            message=f"SMTP login error: {str(e)}",
+                            error_code="SMTP_LOGIN_ERROR"
+                        )
+                    
+                    # Send the email
+                    try:
+                        refused = server.send_message(msg)
+                        if refused:
+                            return EmailDeliveryResult(
+                                success=False,
+                                message=f"Email was refused by some recipients: {refused}",
+                                error_code="EMAIL_REFUSED"
+                            )
+                        else:
+                            logger.info(f"Email sent successfully to {to_email}")
+                            return EmailDeliveryResult(
+                                success=True,
+                                message=f"Email sent successfully to {to_email}"
+                            )
+                    except smtplib.SMTPRecipientsRefused as e:
+                        return EmailDeliveryResult(
+                            success=False,
+                            message=f"All recipients were refused: {str(e)}",
+                            error_code="RECIPIENTS_REFUSED"
+                        )
+                    except smtplib.SMTPSenderRefused as e:
+                        return EmailDeliveryResult(
+                            success=False,
+                            message=f"Sender was refused: {str(e)}",
+                            error_code="SENDER_REFUSED"
+                        )
+                    except smtplib.SMTPDataError as e:
+                        return EmailDeliveryResult(
+                            success=False,
+                            message=f"SMTP data error: {str(e)}",
+                            error_code="SMTP_DATA_ERROR"
+                        )
+                        
+            except smtplib.SMTPConnectError as e:
+                return EmailDeliveryResult(
+                    success=False,
+                    message=f"Failed to connect to SMTP server {self.smtp_server}:{self.smtp_port}: {str(e)}",
+                    error_code="SMTP_CONNECT_FAILED"
+                )
+            except smtplib.SMTPServerDisconnected as e:
+                return EmailDeliveryResult(
+                    success=False,
+                    message=f"SMTP server disconnected unexpectedly: {str(e)}",
+                    error_code="SMTP_DISCONNECTED"
+                )
+            except Exception as e:
+                return EmailDeliveryResult(
+                    success=False,
+                    message=f"Unexpected SMTP error: {str(e)}",
+                    error_code="SMTP_UNEXPECTED_ERROR"
+                )
+                
         except Exception as e:
             logger.error(f"Failed to send email to {to_email}: {str(e)}")
-            return False
+            return EmailDeliveryResult(
+                success=False,
+                message=f"Email service error: {str(e)}",
+                error_code="EMAIL_SERVICE_ERROR"
+            )
+    
+    def test_smtp_connection(self) -> EmailDeliveryResult:
+        """Test SMTP connection and authentication"""
+        if not self.is_configured:
+            return EmailDeliveryResult(
+                success=False,
+                message="Email service not configured",
+                error_code="EMAIL_NOT_CONFIGURED"
+            )
+        
+        try:
+            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                server.set_debuglevel(0)
+                server.starttls()
+                if self.smtp_username is None or self.smtp_password is None:
+                    return EmailDeliveryResult(
+                        success=False,
+                        message="SMTP credentials not configured",
+                        error_code="SMTP_CREDENTIALS_MISSING"
+                    )
+                server.login(self.smtp_username, self.smtp_password)
+                
+                return EmailDeliveryResult(
+                    success=True,
+                    message="SMTP connection and authentication successful"
+                )
+                
+        except smtplib.SMTPAuthenticationError as e:
+            return EmailDeliveryResult(
+                success=False,
+                message=f"SMTP authentication failed: {str(e)}",
+                error_code="SMTP_AUTH_FAILED"
+            )
+        except smtplib.SMTPConnectError as e:
+            return EmailDeliveryResult(
+                success=False,
+                message=f"Failed to connect to SMTP server: {str(e)}",
+                error_code="SMTP_CONNECT_FAILED"
+            )
+        except Exception as e:
+            return EmailDeliveryResult(
+                success=False,
+                message=f"SMTP test failed: {str(e)}",
+                error_code="SMTP_TEST_FAILED"
+            )

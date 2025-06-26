@@ -69,6 +69,7 @@ class UserInDB(UserBase, TimestampMixin):
     id: str
     avatar_url: Optional[str] = None
     password_hash: Optional[str] = None
+    email_verified: Optional[bool] = False
 
 class UserResponse(BaseModel):
     """User response model"""
@@ -76,6 +77,8 @@ class UserResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+    email_sent: Optional[bool] = None
+    email_message: Optional[str] = None
 
 # Supplement models
 class DoseInfo(BaseModel):
@@ -220,6 +223,7 @@ class HealthResponse(BaseModel):
     timestamp: datetime
     gemini_configured: bool
     supabase_configured: bool
+    email_configured: Optional[bool] = None
 
 # Error models
 class ErrorResponse(BaseModel):
@@ -241,6 +245,14 @@ class TokenData(BaseModel):
 class ImageUploadResponse(BaseModel):
     """Image upload response model"""
     image_url: str
+
+# Email delivery models
+class EmailStatusResponse(BaseModel):
+    """Email delivery status response"""
+    success: bool
+    message: str
+    error_code: Optional[str] = None
+    timestamp: datetime
 
 # Configuration for all models
 class ConfigModel(BaseModel):

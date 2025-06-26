@@ -21,7 +21,7 @@ import uvicorn
 from database import Database, get_database
 from auth import AuthService, get_current_user
 from ai_service import AIService
-from email_service import EmailService
+from email_service import EmailService, EmailDeliveryResult
 from token_service import TokenService
 from models import (
     UserCreate, UserLogin, UserResponse, UserUpdate,
@@ -57,6 +57,19 @@ async def lifespan(app: FastAPI):
     app.state.ai_service = ai_service
     app.state.email_service = email_service
     app.state.token_service = token_service
+    
+    # Log email service status
+    email_config = email_service.get_configuration_status()
+    if email_config["configured"]:
+        logger.info("Email service configured successfully")
+        # Test SMTP connection
+        test_result = email_service.test_smtp_connection()
+        if test_result.success:
+            logger.info("SMTP connection test successful")
+        else:
+            logger.warning(f"SMTP connection test failed: {test_result.message}")
+    else:
+        logger.warning(f"Email service not configured. Missing: {', '.join(email_config['missing_config'])}")
     
     logger.info("SafeDoser Backend API started successfully!")
     
@@ -95,12 +108,34 @@ app.add_middleware(
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint"""
+    email_service = app.state.email_service
+    email_config = email_service.get_configuration_status()
+    
     return HealthResponse(
         status="healthy",
         timestamp=datetime.utcnow(),
         gemini_configured=bool(os.getenv("GEMINI_API_KEY")),
-        supabase_configured=bool(os.getenv("SUPABASE_URL"))
+        supabase_configured=bool(os.getenv("SUPABASE_URL")),
+        email_configured=email_config["configured"]
     )
+
+# Email configuration check endpoint
+@app.get("/email/status")
+async def email_status():
+    """Get email service configuration status"""
+    email_service = app.state.email_service
+    config = email_service.get_configuration_status()
+    
+    # Test connection if configured
+    if config["configured"]:
+        test_result = email_service.test_smtp_connection()
+        config["connection_test"] = {
+            "success": test_result.success,
+            "message": test_result.message,
+            "error_code": test_result.error_code
+        }
+    
+    return config
 
 # Email verification models
 class EmailVerificationRequest(BaseModel):
@@ -142,28 +177,39 @@ async def signup(
         verification_token = token_service.generate_token(user_data.email, "email_verification")
         
         # Store verification token
-        await token_service.store_verification_token(user_data.email, verification_token)
+        token_stored = await token_service.store_verification_token(user_data.email, verification_token)
+        
+        if not token_stored:
+            logger.error(f"Failed to store verification token for {user_data.email}")
         
         # Send verification email
-        email_sent = await email_service.send_verification_email(
+        email_result = await email_service.send_verification_email(
             user_data.email, 
             user_data.name, 
             verification_token
         )
         
-        if not email_sent:
-            logger.warning(f"Failed to send verification email to {user_data.email}")
-        
         # Generate tokens (user can use app but some features may be limited)
         access_token = auth_service.create_access_token(user["id"])
         refresh_token = auth_service.create_refresh_token(user["id"])
 
-        return UserResponse(
-            user=user,
-            access_token=access_token,
-            refresh_token=refresh_token,
-            token_type="bearer"
-        )
+        response_data = {
+            "user": user,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "email_sent": email_result.success,
+            "email_message": email_result.message
+        }
+
+        # Log email delivery status
+        if email_result.success:
+            logger.info(f"Verification email sent successfully to {user_data.email}")
+        else:
+            logger.warning(f"Failed to send verification email to {user_data.email}: {email_result.message}")
+
+        return UserResponse(**response_data)
+        
     except HTTPException as http_exc:
         logger.warning(f"Signup failed with HTTPException: {http_exc.detail}")
         raise http_exc
@@ -209,6 +255,7 @@ async def verify_email(
         # Mark user as verified
         await auth_service.update_user(user["id"], {"email_verified": True})
         
+        logger.info(f"Email verified successfully for {verification_data.email}")
         return {"message": "Email verified successfully"}
         
     except HTTPException:
@@ -257,21 +304,32 @@ async def resend_verification_email(
         verification_token = token_service.generate_token(email, "email_verification")
         
         # Store verification token
-        await token_service.store_verification_token(email, verification_token)
+        token_stored = await token_service.store_verification_token(email, verification_token)
+        
+        if not token_stored:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate verification token"
+            )
         
         # Send verification email
-        email_sent = await email_service.send_verification_email(
+        email_result = await email_service.send_verification_email(
             email, 
             user["name"], 
             verification_token
         )
         
-        if email_sent:
-            return {"message": "Verification email sent successfully"}
+        if email_result.success:
+            logger.info(f"Verification email resent successfully to {email}")
+            return {
+                "message": "Verification email sent successfully",
+                "email_sent": True
+            }
         else:
+            logger.error(f"Failed to resend verification email to {email}: {email_result.message}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to send verification email"
+                detail=f"Failed to send verification email: {email_result.message}"
             )
         
     except HTTPException:
@@ -338,34 +396,57 @@ async def forgot_password(
         # Check if user exists
         user = await auth_service.get_user_by_email(request_data.email)
         if not user:
-            # Don't reveal if email exists or not for security
-            return {"message": "If the email exists in our system, a reset link has been sent"}
+            # For security, always return success message
+            return {
+                "message": "If the email exists in our system, a reset link has been sent",
+                "email_sent": False,
+                "reason": "User not found"
+            }
         
         # Generate reset token
         reset_token = token_service.generate_token(request_data.email, "password_reset")
         
         # Store reset token
-        await token_service.store_reset_token(request_data.email, reset_token)
+        token_stored = await token_service.store_reset_token(request_data.email, reset_token)
+        
+        if not token_stored:
+            logger.error(f"Failed to store reset token for {request_data.email}")
+            return {
+                "message": "If the email exists in our system, a reset link has been sent",
+                "email_sent": False,
+                "reason": "Token storage failed"
+            }
         
         # Send reset email
-        email_sent = await email_service.send_password_reset_email(
+        email_result = await email_service.send_password_reset_email(
             request_data.email,
             user["name"],
             reset_token
         )
         
-        if email_sent:
-            logger.info(f"Password reset email sent to {request_data.email}")
+        if email_result.success:
+            logger.info(f"Password reset email sent successfully to {request_data.email}")
+            return {
+                "message": "If the email exists in our system, a reset link has been sent",
+                "email_sent": True
+            }
         else:
-            logger.warning(f"Failed to send password reset email to {request_data.email}")
-        
-        # Always return success message for security
-        return {"message": "If the email exists in our system, a reset link has been sent"}
+            logger.error(f"Failed to send password reset email to {request_data.email}: {email_result.message}")
+            return {
+                "message": "If the email exists in our system, a reset link has been sent",
+                "email_sent": False,
+                "reason": email_result.message,
+                "error_code": email_result.error_code
+            }
         
     except Exception as e:
         logger.error(f"Password reset error: {str(e)}")
-        # Don't reveal internal errors for security
-        return {"message": "If the email exists in our system, a reset link has been sent"}
+        # For security, always return success message
+        return {
+            "message": "If the email exists in our system, a reset link has been sent",
+            "email_sent": False,
+            "reason": "Internal error"
+        }
 
 @app.post("/auth/reset-password")
 async def reset_password(
