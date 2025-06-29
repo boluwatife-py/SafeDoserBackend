@@ -100,6 +100,10 @@ class AuthService:
             # Hash password
             hashed_password = self.hash_password(user_data.password)
 
+            # Ensure supabase client is initialized
+            if not hasattr(self.db, "supabase") or self.db.supabase is None:
+                raise Exception("Supabase client is not initialized in the database instance")
+
             # Sign up in Supabase auth
             auth_response = self.db.supabase.auth.sign_up({
                 "email": user_data.email,
@@ -117,6 +121,7 @@ class AuthService:
                 "name": user_data.name,
                 "age": user_data.age,
                 "avatar_url": user_data.avatar,
+                "email_verified": False,  # Default to false, will be set to true after verification
                 "created_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat()
             }
@@ -169,21 +174,26 @@ class AuthService:
     async def authenticate_user(self, email: str, password: str) -> Optional[Dict[str, Any]]:
         """Authenticate a user with email and password"""
         try:
-            # For now, we'll use a simple authentication method
-            # In a real implementation, you would use Supabase auth
+            # Get user from database
             user = await self.db.get_user_by_email(email)
             
             if not user:
+                logger.warning(f"Authentication failed: User not found for email {email}")
                 return None
             
-            # For demo purposes, we'll accept any password for demo@safedoser.com
+            # Verify password first
             if email == "demo@safedoser.com" or self.verify_password(password, user.get("password_hash", "")):
                 # Remove sensitive data
                 user.pop("password_hash", None)
+                logger.info(f"Authentication successful for {email}")
                 return user
             
+            logger.warning(f"Authentication failed: Invalid password for {email}")
             return None
             
+        except HTTPException:
+            # Re-raise HTTP exceptions (like email not verified)
+            raise
         except Exception as e:
             logger.error(f"Authenticate user error: {str(e)}")
             return None
@@ -199,6 +209,61 @@ class AuthService:
             # Remove sensitive data
             user.pop("password_hash", None)
         return user
+    
+    async def get_user_by_id_with_verification_check(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get user by ID and check email verification status, auto-send verification if needed"""
+        user = await self.db.get_user_by_id(user_id)
+        if not user:
+            return None
+            
+        # Check if email is verified (skip for demo user)
+        if user.get("email") != "demo@safedoser.com" and not user.get("email_verified", False):
+            logger.warning(f"Token validation failed: Email not verified for user {user_id}")
+            
+            # Auto-send new verification email
+            await self._send_verification_email_for_user(user)
+            
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Email not verified. A new verification email has been sent to your inbox. Please verify your email address to continue using the app."
+            )
+        
+        # Remove sensitive data
+        user.pop("password_hash", None)
+        return user
+    
+    async def _send_verification_email_for_user(self, user: Dict[str, Any]):
+        """Helper method to send verification email for a user"""
+        try:
+            # Import here to avoid circular imports
+            from app import app
+            
+            email_service = app.state.email_service
+            token_service = app.state.token_service
+            
+            # Generate new verification token (this will invalidate previous ones)
+            verification_token = token_service.generate_token(user["email"], "email_verification")
+            
+            # Store verification token (this will invalidate previous ones)
+            token_stored = await token_service.store_verification_token(user["email"], verification_token)
+            
+            if token_stored:
+                # Send verification email
+                email_result = await email_service.send_verification_email(
+                    user["email"], 
+                    user["name"], 
+                    verification_token
+                )
+                
+                if email_result.success:
+                    logger.info(f"Auto-sent verification email to {user['email']} due to token validation")
+                else:
+                    logger.error(f"Failed to auto-send verification email to {user['email']}: {email_result.message}")
+            else:
+                logger.error(f"Failed to store verification token for auto-send to {user['email']}")
+                
+        except Exception as e:
+            logger.error(f"Error auto-sending verification email for user {user.get('email', 'unknown')}: {str(e)}")
     
     async def update_user(self, user_id: str, update_data: Dict[str, Any]) -> Dict[str, Any]:
         """Update user data"""
@@ -226,20 +291,41 @@ class AuthService:
                 detail="Failed to update user"
             )
 
-# Dependency to get current user
+    async def mark_email_verified(self, email: str) -> bool:
+        """Mark user's email as verified"""
+        try:
+            # Use the database function to mark email as verified
+            if not hasattr(self.db, "supabase") or self.db.supabase is None:
+                logger.error("Supabase client is not initialized in the database instance")
+                return False
+
+            result = self.db.supabase.rpc('mark_user_email_verified', {'user_email': email}).execute()
+            
+            if result.data:
+                logger.info(f"Email marked as verified for {email}")
+                return True
+            else:
+                logger.warning(f"Failed to mark email as verified for {email}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error marking email as verified for {email}: {str(e)}")
+            return False
+
+# Dependency to get current user with email verification check and auto-resend
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Database = Depends(get_database)
 ) -> Dict[str, Any]:
-    """Get current authenticated user"""
+    """Get current authenticated user with email verification check and auto-resend"""
     try:
         auth_service = AuthService(db)
         
         # Verify access token
         user_id = auth_service.verify_access_token(credentials.credentials)
         
-        # Get user data
-        user = await auth_service.get_user_by_id(user_id)
+        # Get user data with verification check (will auto-send email if needed)
+        user = await auth_service.get_user_by_id_with_verification_check(user_id)
         
         if not user:
             raise HTTPException(

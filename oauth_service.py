@@ -33,10 +33,15 @@ class OAuthService:
         # Google OAuth configuration
         self.google_client_id = os.getenv("GOOGLE_CLIENT_ID")
         self.google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
-        self.google_redirect_uri = os.getenv("GOOGLE_REDIRECT_URI")
+        
+        # Get the frontend URL from environment or use default
+        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+        
+        # Use environment variable or construct from frontend URL
+        self.google_redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", f"{os.getenv('VITE_API_BASE_URL', 'http://localhost:8000')}/auth/google/callback")
         
         # Frontend URL for redirects
-        self.frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+        self.frontend_url = frontend_url
         
         # OAuth endpoints
         self.google_auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -45,11 +50,20 @@ class OAuthService:
         
         # OAuth scopes
         self.google_scopes = ["openid", "email", "profile"]
+        
+        # Initialize state storage
+        self._oauth_states = {}
+        
+        logger.info(f"OAuth Service initialized with redirect URI: {self.google_redirect_uri}")
+        logger.info(f"Frontend URL: {self.frontend_url}")
     
     def is_configured(self, provider: str) -> bool:
         """Check if OAuth provider is properly configured"""
         if provider == "google":
-            return bool(self.google_client_id and self.google_client_secret)
+            configured = bool(self.google_client_id and self.google_client_secret)
+            if not configured:
+                logger.error("Google OAuth not configured - missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET")
+            return configured
         return False
     
     def generate_state(self) -> str:
@@ -75,6 +89,7 @@ class OAuthService:
                 self._oauth_states = {}
             
             self._oauth_states[state] = state_data
+            logger.info(f"Stored OAuth state: {state[:8]}...")
             return True
             
         except Exception as e:
@@ -84,23 +99,39 @@ class OAuthService:
     def verify_oauth_state(self, state: str, provider: str) -> bool:
         """Verify OAuth state parameter"""
         try:
-            if not hasattr(self, '_oauth_states') or state not in self._oauth_states:
+            if not hasattr(self, '_oauth_states'):
+                logger.error(f"OAuth state storage not initialized")
+                return False
+                
+            if state not in self._oauth_states:
+                logger.error(f"OAuth state not found: {state[:8]}...")
+                # For debugging, log all available states
+                available_states = list(self._oauth_states.keys())
+                logger.error(f"Available states: {[s[:8] for s in available_states]}")
                 return False
             
             state_data = self._oauth_states[state]
             
             # Check if state matches provider and hasn't been used
-            if (state_data["provider"] != provider or 
-                state_data["used"] or 
-                datetime.fromisoformat(state_data["expires_at"]) < datetime.utcnow()):
+            if state_data["provider"] != provider:
+                logger.error(f"OAuth state provider mismatch: expected {provider}, got {state_data['provider']}")
+                return False
+                
+            if state_data["used"]:
+                logger.error(f"OAuth state already used: {state[:8]}...")
+                return False
+                
+            if datetime.fromisoformat(state_data["expires_at"]) < datetime.utcnow():
+                logger.error(f"OAuth state expired: {state[:8]}...")
                 return False
             
             # Mark as used
             state_data["used"] = True
+            logger.info(f"OAuth state verified: {state[:8]}...")
             return True
             
         except Exception as e:
-            logger.error(f"Error verifying OAuth state: {str(e)}")
+            logger.error(f"Error verifying OAuth state: {str(e)}", exc_info=True)
             return False
     
     def get_google_auth_url(self) -> tuple[str, str]:
@@ -122,14 +153,17 @@ class OAuthService:
         }
         
         auth_url = f"{self.google_auth_url}?{urlencode(params)}"
-        print(auth_url)
+        logger.info(f"Generated Google OAuth URL with state: {state[:8]}...")
         return auth_url, state
     
     async def handle_google_callback(self, code: str, state: str) -> Dict[str, Any]:
         """Handle Google OAuth callback"""
         try:
+            logger.info(f"Handling Google callback with state: {state[:8]}...")
+            
             # Verify state
             if not self.verify_oauth_state(state, "google"):
+                logger.error("Invalid or expired state parameter")
                 raise ValueError("Invalid or expired state parameter")
             
             # Exchange code for tokens
@@ -141,20 +175,32 @@ class OAuthService:
                 "redirect_uri": self.google_redirect_uri
             }
             
-            token_response = requests.post(self.google_token_url, data=token_data)
-            token_response.raise_for_status()
+            logger.info(f"Exchanging code for tokens with redirect_uri: {self.google_redirect_uri}")
+            
+            token_response = requests.post(self.google_token_url, data=token_data, timeout=30)
+            
+            if not token_response.ok:
+                logger.error(f"Token exchange failed: {token_response.status_code} - {token_response.text}")
+                raise Exception(f"Token exchange failed: {token_response.status_code}")
+            
             tokens = token_response.json()
+            logger.info("Successfully exchanged code for tokens")
             
             # Get user info
             headers = {"Authorization": f"Bearer {tokens['access_token']}"}
-            user_response = requests.get(self.google_userinfo_url, headers=headers)
-            user_response.raise_for_status()
+            user_response = requests.get(self.google_userinfo_url, headers=headers, timeout=30)
+            
+            if not user_response.ok:
+                logger.error(f"User info request failed: {user_response.status_code} - {user_response.text}")
+                raise Exception(f"User info request failed: {user_response.status_code}")
+            
             user_info = user_response.json()
+            logger.info(f"Retrieved user info for: {user_info.get('email', 'unknown')}")
             
             # Create or get user
             user_data = {
                 "email": user_info["email"],
-                "name": user_info["name"],
+                "name": user_info.get("name", user_info.get("given_name", "")),
                 "avatar_url": user_info.get("picture"),
                 "email_verified": user_info.get("verified_email", True),
                 "oauth_provider": "google",
@@ -167,6 +213,8 @@ class OAuthService:
             access_token = self.auth_service.create_access_token(user["id"])
             refresh_token = self.auth_service.create_refresh_token(user["id"])
             
+            logger.info(f"OAuth login successful for user: {user['email']}")
+            
             return {
                 "user": user,
                 "access_token": access_token,
@@ -175,7 +223,7 @@ class OAuthService:
             }
             
         except Exception as e:
-            logger.error(f"Google OAuth callback error: {str(e)}")
+            logger.error(f"Google OAuth callback error: {str(e)}", exc_info=True)
             raise
     
     async def create_or_get_oauth_user(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -185,6 +233,7 @@ class OAuthService:
             existing_user = await self.auth_service.get_user_by_email(user_data["email"])
             
             if existing_user:
+                logger.info(f"Found existing user: {user_data['email']}")
                 # Update user with OAuth info if needed
                 update_data = {}
                 if not existing_user.get("email_verified") and user_data.get("email_verified"):
@@ -198,12 +247,14 @@ class OAuthService:
                 
                 return existing_user
             
+            logger.info(f"Creating new OAuth user: {user_data['email']}")
+            
             # Create new user
             # Generate a random password for OAuth users
             random_password = secrets.token_urlsafe(32)
             
-            # Estimate age as 30 if not provided (OAuth doesn't typically provide age)
-            age = 30
+            # Default age for OAuth users (they can update this later)
+            age = 25
             
             new_user_data = {
                 "email": user_data["email"],
@@ -224,18 +275,29 @@ class OAuthService:
             await self.auth_service.update_user(user["id"], oauth_update)
             user.update(oauth_update)
             
+            logger.info(f"Successfully created OAuth user: {user['email']}")
             return user
             
         except Exception as e:
-            logger.error(f"Error creating/getting OAuth user: {str(e)}")
+            logger.error(f"Error creating/getting OAuth user: {str(e)}", exc_info=True)
             raise
     
     def get_frontend_redirect_url(self, success: bool, **params) -> str:
         """Generate frontend redirect URL with parameters"""
         if success:
-            # Redirect to main app
+            # Redirect to main app with tokens
+            if 'access_token' in params and 'refresh_token' in params:
+                query_params = urlencode({
+                    'access_token': params['access_token'],
+                    'refresh_token': params['refresh_token']
+                })
+                redirect_url = f"{self.frontend_url}/auth/login?{query_params}"
+                logger.info(f"Success redirect URL: {redirect_url}")
+                return redirect_url
             return f"{self.frontend_url}/"
         else:
             # Redirect to login with error
             error_params = urlencode(params)
-            return f"{self.frontend_url}/auth/login?{error_params}"
+            redirect_url = f"{self.frontend_url}/auth/login?{error_params}"
+            logger.info(f"Error redirect URL: {redirect_url}")
+            return redirect_url
