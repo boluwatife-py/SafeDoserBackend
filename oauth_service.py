@@ -35,10 +35,10 @@ class OAuthService:
         self.google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
         
         # Get the frontend URL from environment or use default
-        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+        frontend_url = os.getenv("FRONTEND_URL", "https://safedoser.netlify.app")
         
         # Use environment variable or construct from frontend URL
-        self.google_redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", f"{os.getenv('VITE_API_BASE_URL', 'https://safdoser.onrender.com')}/auth/google/callback")
+        self.google_redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", f"https://safedoser.netlify.app/auth/google/callback")
         
         # Frontend URL for redirects
         self.frontend_url = frontend_url

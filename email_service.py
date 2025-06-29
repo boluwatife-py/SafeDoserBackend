@@ -35,7 +35,7 @@ class EmailService:
         self.smtp_password = os.getenv("SMTP_PASSWORD")
         self.from_email = os.getenv("FROM_EMAIL", self.smtp_username)
         self.app_name = "SafeDoser"
-        self.frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+        self.frontend_url = os.getenv("FRONTEND_URL", "https://safedoser.netlify.app")
         
         # Check if email is configured
         self.is_configured = bool(self.smtp_username and self.smtp_password)
