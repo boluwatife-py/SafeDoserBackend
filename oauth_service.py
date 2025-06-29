@@ -38,7 +38,7 @@ class OAuthService:
         frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
         
         # Use environment variable or construct from frontend URL
-        self.google_redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", f"{os.getenv('VITE_API_BASE_URL', 'http://localhost:8000')}/auth/google/callback")
+        self.google_redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", f"{os.getenv('VITE_API_BASE_URL', 'https://safdoser.onrender.com')}/auth/google/callback")
         
         # Frontend URL for redirects
         self.frontend_url = frontend_url
