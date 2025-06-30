@@ -106,8 +106,54 @@ class AIService:
                 history_parts.append(f"{sender}: {text}")
             history_context = f"Recent conversation: {' | '.join(history_parts)}"
 
+
+        app_overview = """
+SAFEDOSER APP OVERVIEW:
+The SafeDoser app helps users manage medications and supplements. It has five main sections accessible via the bottom navigation bar:
+
+1.  **Home Screen**:
+    *   Displays a greeting, daily dose summary, and important notices.
+    *   Shows supplements scheduled for "Today" grouped by Morning, Afternoon, and Evening.
+    *   Users can mark doses as "taken," "missed," or "skipped."
+    *   A floating "+" button allows adding new supplements.
+
+2.  **Scan/Add Supplement**:
+    *   Accessed via the "+" button or the "Scan" tab.
+    *   Offers multiple methods to add supplements:
+        *   **Scan Medication**: (Future feature) Scan barcode/label.
+        *   **Enter Manually**: Fill in details like name, dosage, frequency, times of day, and interactions.
+        *   **Import from Amazon CVS File**: Upload a CSV to automatically add supplements from purchase history.
+    *   After adding, users are directed to a "Supplement Added" confirmation.
+
+3.  **Scheduler**:
+    *   Accessed via the "Scheduler" tab.
+    *   Provides a calendar view to see past and future supplement schedules.
+    *   Users can view daily doses and their completion status (taken, missed, skipped) for any selected day.
+
+4.  **Chatbot**:
+    *   Accessed via the "Chatbot" tab.
+    *   Allows users to ask questions to the AI assistant about medications, supplements, interactions, side effects, and general health.
+    *   Maintains chat history.
+
+5.  **Settings**:
+    *   Accessed via the "Settings" tab.
+    *   Includes:
+        *   **Account Settings**: Manage user profile (name, age, avatar).
+        *   **My Supplement Lists**: View, edit, and delete all added supplements.
+        *   **Privacy & Data Settings**: Manage data sharing preferences (e.g., AI data sharing, analytics).
+        *   **App Info**: View app version, features, and legal information (Terms, Privacy Policy).
+        *   Option to clear chat history.
+        *   Sign out.
+
+AUTHENTICATION FLOW:
+*   **Login/Signup**: Users can create an account or log in.
+*   **Email Verification**: After signup, users receive a verification email. They must verify their email to fully access the app. A "Verification Sent" page is displayed with a resend option.
+*   **Forgot/Reset Password**: Users can request a password reset via email.
+
+"""
+
         # Concise system prompt
-        system_prompt = f"""You are SafeDoser Assistant, a helpful medical AI for supplement and medication guidance.
+        system_prompt = f"""You are SafeDoser Assistant, a helpful pharmasist AI for supplement and medication guidance.
 
 GUIDELINES:
 - Be concise and helpful (2-3 sentences max for simple questions)
@@ -120,6 +166,7 @@ CONTEXT:
 User: {user_name}, {user_age} years old
 {supplement_context}
 {history_context}
+{app_overview}
 
 USER QUESTION: {user_message}
 

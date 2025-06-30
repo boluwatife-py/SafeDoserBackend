@@ -220,50 +220,15 @@ class AuthService:
         if user.get("email") != "demo@safedoser.com" and not user.get("email_verified", False):
             logger.warning(f"Token validation failed: Email not verified for user {user_id}")
             
-            # Auto-send new verification email
-            await self._send_verification_email_for_user(user)
-            
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Email not verified. A new verification email has been sent to your inbox. Please verify your email address to continue using the app."
+                detail="Email not verified."
             )
         
         # Remove sensitive data
         user.pop("password_hash", None)
         return user
     
-    async def _send_verification_email_for_user(self, user: Dict[str, Any]):
-        """Helper method to send verification email for a user"""
-        try:
-            # Import here to avoid circular imports
-            from app import app
-            
-            email_service = app.state.email_service
-            token_service = app.state.token_service
-            
-            # Generate new verification token (this will invalidate previous ones)
-            verification_token = token_service.generate_token(user["email"], "email_verification")
-            
-            # Store verification token (this will invalidate previous ones)
-            token_stored = await token_service.store_verification_token(user["email"], verification_token)
-            
-            if token_stored:
-                # Send verification email
-                email_result = await email_service.send_verification_email(
-                    user["email"], 
-                    user["name"], 
-                    verification_token
-                )
-                
-                if email_result.success:
-                    logger.info(f"Auto-sent verification email to {user['email']} due to token validation")
-                else:
-                    logger.error(f"Failed to auto-send verification email to {user['email']}: {email_result.message}")
-            else:
-                logger.error(f"Failed to store verification token for auto-send to {user['email']}")
-                
-        except Exception as e:
-            logger.error(f"Error auto-sending verification email for user {user.get('email', 'unknown')}: {str(e)}")
     
     async def update_user(self, user_id: str, update_data: Dict[str, Any]) -> Dict[str, Any]:
         """Update user data"""

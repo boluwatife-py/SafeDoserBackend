@@ -216,6 +216,21 @@ class SupplementLogResponse(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+class MarkCompletedRequest(BaseModel):
+    """Request model for marking supplement as completed"""
+    supplement_id: int
+    scheduled_time: str
+    status: str = Field(pattern="^(taken|missed|skipped)$")
+    notes: Optional[str] = None
+
+    @field_validator("scheduled_time")
+    @classmethod
+    def validate_time_format(cls, v: str) -> str:
+        """Validate time format (HH:MM)"""
+        if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", v):
+            raise ValueError("Time must be in HH:MM format")
+        return v
+
 # Health check model
 class HealthResponse(BaseModel):
     """Health check response model"""

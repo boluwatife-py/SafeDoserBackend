@@ -5,7 +5,7 @@ A comprehensive FastAPI backend for the SafeDoser medication management app.
 
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Optional, List, Dict, Any
 import asyncio
 from contextlib import asynccontextmanager
@@ -27,6 +27,7 @@ from oauth_service import OAuthService
 from models import (
     UserCreate, UserLogin, UserResponse, UserUpdate,
     SupplementCreate, SupplementUpdate, SupplementResponse,
+    SupplementLogCreate, SupplementLogUpdate, SupplementLogResponse, MarkCompletedRequest,
     ChatMessage, ChatResponse, ChatHistoryResponse,
     HealthResponse
 )
@@ -789,6 +790,139 @@ async def delete_supplement(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete supplement"
+        )
+
+# Supplement logs endpoints
+@app.get("/supplement-logs/today")
+async def get_today_supplement_logs(
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_database)
+):
+    """Get today's supplement logs for the user"""
+    try:
+        logger.debug(f"Getting today's supplement logs for user: {current_user['id']}")
+        
+        today = date.today()
+        logs = await db.get_supplement_logs_by_date(current_user["id"], today)
+        
+        logger.debug(f"Found {len(logs)} supplement logs for today")
+        return logs
+        
+    except Exception as e:
+        logger.error(f"Get today's supplement logs error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch today's supplement logs"
+        )
+
+@app.post("/supplement-logs/mark-completed")
+async def mark_supplement_completed(
+    log_data: MarkCompletedRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_database)
+):
+    """Mark a supplement as completed for a specific time"""
+    try:
+        logger.info(f"Marking supplement {log_data.supplement_id} as {log_data.status} at {log_data.scheduled_time} for user: {current_user['id']}")
+        
+        # Verify supplement belongs to user
+        supplement = await db.get_supplement_by_id(log_data.supplement_id)
+        if not supplement or supplement["user_id"] != current_user["id"]:
+            logger.warning(f"Supplement not found or access denied: {log_data.supplement_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Supplement not found"
+            )
+        
+        # Check if log already exists for today
+        today = date.today()
+        existing_log = await db.get_supplement_log_by_supplement_and_time(
+            current_user["id"], 
+            log_data.supplement_id, 
+            log_data.scheduled_time, 
+            today
+        )
+        
+        if existing_log:
+            # Update existing log
+            update_data = {
+                "status": log_data.status,
+                "notes": log_data.notes
+            }
+            
+            if log_data.status == "taken":
+                update_data["taken_at"] = datetime.utcnow()
+            
+            updated_log = await db.update_supplement_log(existing_log["id"], update_data)
+            logger.info(f"Updated existing supplement log: {existing_log['id']}")
+            return updated_log
+        else:
+            # Create new log
+            log_create_data = {
+                "user_id": current_user["id"],
+                "supplement_id": log_data.supplement_id,
+                "scheduled_time": log_data.scheduled_time,
+                "status": log_data.status,
+                "notes": log_data.notes
+            }
+            
+            if log_data.status == "taken":
+                log_create_data["taken_at"] = datetime.utcnow()
+            
+            new_log = await db.create_supplement_log(log_create_data)
+            logger.info(f"Created new supplement log: {new_log['id']}")
+            return new_log
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Mark supplement completed error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to mark supplement as completed"
+        )
+
+@app.put("/supplement-logs/{log_id}")
+async def update_supplement_log(
+    log_id: str,
+    log_data: SupplementLogUpdate,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_database)
+):
+    """Update a supplement log"""
+    try:
+        logger.info(f"Updating supplement log {log_id} for user: {current_user['id']}")
+        
+        # Verify log belongs to user
+        log = await db.get_supplement_log_by_id(log_id)
+        if not log or log["user_id"] != current_user["id"]:
+            logger.warning(f"Supplement log not found or access denied: {log_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Supplement log not found"
+            )
+        
+        # Prepare update data
+        update_data = log_data.dict(exclude_unset=True)
+        
+        # Set taken_at timestamp if status is being changed to taken
+        if log_data.status == "taken" and log.get("status") != "taken":
+            update_data["taken_at"] = datetime.utcnow()
+        elif log_data.status and log_data.status != "taken":
+            update_data["taken_at"] = None
+        
+        updated_log = await db.update_supplement_log(log_id, update_data)
+        
+        logger.info(f"Supplement log updated successfully: {log_id}")
+        return updated_log
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Update supplement log error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update supplement log"
         )
 
 # Chat endpoints

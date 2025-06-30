@@ -5,7 +5,7 @@ Handles all database operations using Supabase
 
 import os
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional, Dict, Any, List
 import json
 from dotenv import load_dotenv
@@ -19,23 +19,40 @@ class Database:
     
     def __init__(self):
         self.supabase_url = os.getenv("SUPABASE_URL")
-        self.supabase_key = os.getenv("SUPABASE_ANON_KEY")
+        self.supabase_anon_key = os.getenv("SUPABASE_ANON_KEY")
+        self.supabase_service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         self.supabase: Optional[Client] = None
+        self.supabase_service: Optional[Client] = None
         
-        if not self.supabase_url or not self.supabase_key:
+        if not self.supabase_url or not self.supabase_anon_key:
             logger.error("Missing Supabase configuration")
             raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY must be set")
     
     async def initialize(self):
         """Initialize database connection"""
         try:
-            if self.supabase_url is None or self.supabase_key is None:
+            if self.supabase_url is None or self.supabase_anon_key is None:
                 raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY must be set")
-            self.supabase = create_client(str(self.supabase_url), str(self.supabase_key))
+            
+            # Initialize anon client for regular operations
+            self.supabase = create_client(str(self.supabase_url), str(self.supabase_anon_key))
+            
+            # Initialize service client for admin operations if service key is available
+            if self.supabase_service_key:
+                self.supabase_service = create_client(str(self.supabase_url), str(self.supabase_service_key))
+                logger.info("Database initialized with service role access")
+            else:
+                logger.warning("No service role key provided - some operations may fail")
+                
             logger.info("Database initialized successfully")
         except Exception as e:
             logger.error(f"Database initialization failed: {str(e)}")
             raise
+    
+    def set_auth_token(self, token: str):
+        """Set authentication token for the current session"""
+        if self.supabase:
+            self.supabase.auth.set_session(token, "")
     
     async def close(self):
         """Close database connection"""
@@ -157,7 +174,7 @@ class Database:
 
             # Ensure Supabase client is initialized
             if self.supabase is None:
-                self.supabase = create_client(str(self.supabase_url), str(self.supabase_key))
+                self.supabase = create_client(str(self.supabase_url), str(self.supabase_anon_key))
             
             # Serialize the data
             serialized_data = self._serialize_for_json(user_data)
@@ -182,7 +199,7 @@ class Database:
 
             # Ensure Supabase client is initialized
             if self.supabase is None:
-                self.supabase = create_client(str(self.supabase_url), str(self.supabase_key))
+                self.supabase = create_client(str(self.supabase_url), str(self.supabase_anon_key))
             
             result = self.supabase.table("users").select("*").eq("email", email).execute()
             
@@ -204,7 +221,7 @@ class Database:
 
             # Ensure Supabase client is initialized
             if self.supabase is None:
-                self.supabase = create_client(str(self.supabase_url), str(self.supabase_key))
+                self.supabase = create_client(str(self.supabase_url), str(self.supabase_anon_key))
             
             result = self.supabase.table("users").select("*").eq("id", user_id).execute()
             
@@ -229,7 +246,7 @@ class Database:
             
             # Ensure Supabase client is initialized
             if self.supabase is None:
-                self.supabase = create_client(str(self.supabase_url), str(self.supabase_key))
+                self.supabase = create_client(str(self.supabase_url), str(self.supabase_anon_key))
             
             # Serialize the data
             serialized_data = self._serialize_for_json(update_data)
@@ -261,7 +278,7 @@ class Database:
             
             # Ensure Supabase client is initialized
             if self.supabase is None:
-                self.supabase = create_client(str(self.supabase_url), str(self.supabase_key))
+                self.supabase = create_client(str(self.supabase_url), str(self.supabase_anon_key))
             
             # Prepare data for database insertion
             prepared_data = self._prepare_supplement_data(supplement_data)
@@ -296,7 +313,7 @@ class Database:
             
             # Ensure Supabase client is initialized
             if self.supabase is None:
-                self.supabase = create_client(str(self.supabase_url), str(self.supabase_key))
+                self.supabase = create_client(str(self.supabase_url), str(self.supabase_anon_key))
             
             result = self.supabase.table("supplements").select("*").eq("user_id", user_id).order("created_at", desc=False).execute()
             
@@ -322,7 +339,7 @@ class Database:
 
             # Ensure Supabase client is initialized
             if self.supabase is None:
-                self.supabase = create_client(str(self.supabase_url), str(self.supabase_key))
+                self.supabase = create_client(str(self.supabase_url), str(self.supabase_anon_key))
             
             result = self.supabase.table("supplements").select("*").eq("id", supplement_id).execute()
             
@@ -352,7 +369,7 @@ class Database:
             
             # Ensure Supabase client is initialized
             if self.supabase is None:
-                self.supabase = create_client(str(self.supabase_url), str(self.supabase_key))
+                self.supabase = create_client(str(self.supabase_url), str(self.supabase_anon_key))
             
             # Prepare data for database update
             prepared_data = self._prepare_supplement_data(update_data)
@@ -384,7 +401,7 @@ class Database:
 
             # Ensure Supabase client is initialized
             if self.supabase is None:
-                self.supabase = create_client(str(self.supabase_url), str(self.supabase_key))
+                self.supabase = create_client(str(self.supabase_url), str(self.supabase_anon_key))
             
             result = self.supabase.table("supplements").delete().eq("id", supplement_id).execute()
             
@@ -397,6 +414,150 @@ class Database:
                 
         except Exception as e:
             logger.error(f"Delete supplement error: {str(e)}")
+            raise
+    
+    # Supplement logs operations
+    async def create_supplement_log(self, log_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new supplement log"""
+        try:
+            logger.info(f"Creating supplement log for user {log_data.get('user_id')}")
+            logger.debug(f"Log data: {log_data}")
+            
+            # Add timestamp
+            log_data["created_at"] = datetime.utcnow().isoformat()
+            
+            # Use service client if available for RLS bypass, otherwise use regular client
+            client = self.supabase_service if self.supabase_service else self.supabase
+            
+            if client is None:
+                client = create_client(str(self.supabase_url), str(self.supabase_service_key or self.supabase_anon_key))
+            
+            # Serialize the data
+            serialized_data = self._serialize_for_json(log_data)
+            
+            result = client.table("supplement_logs").insert(serialized_data).execute()
+            
+            if result.data:
+                logger.info(f"Supplement log created successfully: {result.data[0]['id']}")
+                return result.data[0]
+            else:
+                logger.error("Failed to create supplement log: No data returned")
+                raise Exception("Failed to create supplement log")
+                
+        except Exception as e:
+            logger.error(f"Create supplement log error: {str(e)}")
+            raise
+    
+    async def get_supplement_logs_by_date(self, user_id: str, target_date: date) -> List[Dict[str, Any]]:
+        """Get supplement logs for a specific date"""
+        try:
+            logger.debug(f"Getting supplement logs for user {user_id} on {target_date}")
+            
+            # Use service client if available, otherwise use regular client
+            client = self.supabase_service if self.supabase_service else self.supabase
+            
+            if client is None:
+                client = create_client(str(self.supabase_url), str(self.supabase_service_key or self.supabase_anon_key))
+            
+            # Get logs for the specific date
+            start_date = target_date.isoformat()
+            end_date = (target_date + timedelta(days=1)).isoformat()
+            
+            result = client.table("supplement_logs").select("*").eq("user_id", user_id).gte("created_at", start_date).lt("created_at", end_date).order("created_at", desc=False).execute()
+            
+            logs = result.data or []
+            logger.debug(f"Found {len(logs)} supplement logs for {target_date}")
+            
+            return logs
+            
+        except Exception as e:
+            logger.error(f"Get supplement logs by date error: {str(e)}")
+            raise
+    
+    async def get_supplement_log_by_id(self, log_id: str) -> Optional[Dict[str, Any]]:
+        """Get supplement log by ID"""
+        try:
+            logger.debug(f"Getting supplement log by ID: {log_id}")
+            
+            # Use service client if available, otherwise use regular client
+            client = self.supabase_service if self.supabase_service else self.supabase
+            
+            if client is None:
+                client = create_client(str(self.supabase_url), str(self.supabase_service_key or self.supabase_anon_key))
+            
+            result = client.table("supplement_logs").select("*").eq("id", log_id).execute()
+            
+            if result.data:
+                logger.debug(f"Supplement log found: {log_id}")
+                return result.data[0]
+            else:
+                logger.debug(f"No supplement log found with ID: {log_id}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Get supplement log by ID error: {str(e)}")
+            raise
+    
+    async def get_supplement_log_by_supplement_and_time(
+        self, 
+        user_id: str, 
+        supplement_id: int, 
+        scheduled_time: str, 
+        target_date: date
+    ) -> Optional[Dict[str, Any]]:
+        """Get supplement log by supplement ID and scheduled time for a specific date"""
+        try:
+            logger.debug(f"Getting supplement log for user {user_id}, supplement {supplement_id}, time {scheduled_time} on {target_date}")
+            
+            # Use service client if available, otherwise use regular client
+            client = self.supabase_service if self.supabase_service else self.supabase
+            
+            if client is None:
+                client = create_client(str(self.supabase_url), str(self.supabase_service_key or self.supabase_anon_key))
+            
+            # Get logs for the specific date
+            start_date = target_date.isoformat()
+            end_date = (target_date + timedelta(days=1)).isoformat()
+            
+            result = client.table("supplement_logs").select("*").eq("user_id", user_id).eq("supplement_id", supplement_id).eq("scheduled_time", scheduled_time).gte("created_at", start_date).lt("created_at", end_date).execute()
+            
+            if result.data:
+                logger.debug(f"Supplement log found for supplement {supplement_id} at {scheduled_time}")
+                return result.data[0]
+            else:
+                logger.debug(f"No supplement log found for supplement {supplement_id} at {scheduled_time}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Get supplement log by supplement and time error: {str(e)}")
+            raise
+    
+    async def update_supplement_log(self, log_id: str, update_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Update supplement log"""
+        try:
+            logger.info(f"Updating supplement log {log_id}")
+            logger.debug(f"Update data: {update_data}")
+            
+            # Use service client if available, otherwise use regular client
+            client = self.supabase_service if self.supabase_service else self.supabase
+            
+            if client is None:
+                client = create_client(str(self.supabase_url), str(self.supabase_service_key or self.supabase_anon_key))
+            
+            # Serialize the data
+            serialized_data = self._serialize_for_json(update_data)
+            
+            result = client.table("supplement_logs").update(serialized_data).eq("id", log_id).execute()
+            
+            if result.data:
+                logger.info(f"Supplement log updated successfully: {log_id}")
+                return result.data[0]
+            else:
+                logger.error(f"Failed to update supplement log: {log_id}")
+                raise Exception("Failed to update supplement log")
+                
+        except Exception as e:
+            logger.error(f"Update supplement log error: {str(e)}")
             raise
     
     # Chat operations
@@ -415,7 +576,7 @@ class Database:
 
             # Ensure Supabase client is initialized
             if self.supabase is None:
-                self.supabase = create_client(str(self.supabase_url), str(self.supabase_key))
+                self.supabase = create_client(str(self.supabase_url), str(self.supabase_anon_key))
             
             result = self.supabase.table("chat_messages").insert(message_data).execute()
             
@@ -437,7 +598,7 @@ class Database:
             
             # Ensure Supabase client is initialized
             if self.supabase is None:
-                self.supabase = create_client(str(self.supabase_url), str(self.supabase_key))
+                self.supabase = create_client(str(self.supabase_url), str(self.supabase_anon_key))
             
             result = self.supabase.table("chat_messages").select("*").eq("user_id", user_id).order("timestamp", desc=True).limit(limit).execute()
             
@@ -469,7 +630,7 @@ class Database:
             
             # Ensure Supabase client is initialized
             if self.supabase is None:
-                self.supabase = create_client(str(self.supabase_url), str(self.supabase_key))
+                self.supabase = create_client(str(self.supabase_url), str(self.supabase_anon_key))
             result = self.supabase.table("chat_messages").delete().eq("user_id", user_id).execute()
             
             deleted_count = len(result.data) if result.data else 0
